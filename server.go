@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
+	"time"
 
 	clustercfg "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	clustersvc "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
@@ -26,7 +28,12 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 	if err != nil {
 		return err
 	}
-	s.l.Printf("Got request: %v", req.String())
+
+	j, err := json.MarshalIndent(req, "", "  ")
+	if err != nil {
+		return err
+	}
+	s.l.Printf("Got request:\n%s\n", string(j))
 
 	// TODO: Pause rather than replying if there is nothing new.
 	// TODO: Need to loop here. Look at go-control-plane.
@@ -36,23 +43,28 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 	// resource name is specified.
 	// TODO: Return a short TTL and ensure "refreshes" are handled.
 
-	if _, ok := req.InitialResourceVersions["foo"]; !ok {
-		s.l.Println("Sending empty response")
-		return dcs.Send(&discovery.DeltaDiscoveryResponse{})
-	}
+	// Construct a response.
+	resources := []*discovery.Resource{}
+	for _, r := range req.ResourceNamesSubscribe {
+		if r == "" {
+			s.l.Println("Skipping empty resource name")
+			continue
+		}
 
-	foo, err := ptypes.MarshalAny(&clustercfg.Cluster{
-		Name: "foo_cluster",
-	})
-	if err != nil {
-		return err
-	}
+		cluster, err := ptypes.MarshalAny(&clustercfg.Cluster{
+			Name:           r,
+			ConnectTimeout: ptypes.DurationProto(2 * time.Second),
+		})
+		if err != nil {
+			s.l.Printf("Marshalling cluster config: %v", err)
+			continue
+		}
 
-	bar, err := ptypes.MarshalAny(&clustercfg.Cluster{
-		Name: "bar_cluster",
-	})
-	if err != nil {
-		return err
+		resources = append(resources, &discovery.Resource{
+			Name:     r,
+			Resource: cluster,
+			Version:  "v1",
+		})
 	}
 
 	nonce, err := nonce()
@@ -61,21 +73,18 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 	}
 
 	resp := &discovery.DeltaDiscoveryResponse{
-		Resources: []*discovery.Resource{
-			{
-				Name:     "foo",
-				Version:  "1",
-				Resource: foo,
-			},
-			{
-				Name:     "bar",
-				Version:  "1",
-				Resource: bar,
-			},
-		},
-		Nonce: nonce,
+		Resources:         resources,
+		Nonce:             nonce,
+		TypeUrl:           "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+		SystemVersionInfo: "foo",
 	}
-	s.l.Printf("Sending response: %v", resp.String())
+
+	j, err = json.MarshalIndent(resp, "", "  ")
+	if err != nil {
+		return err
+	}
+	s.l.Printf("Sending response: %v", string(j))
+
 	return dcs.Send(resp)
 }
 
