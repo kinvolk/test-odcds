@@ -10,6 +10,8 @@ import (
 	"time"
 
 	clustercfg "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	corecfg "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	endpointcfg "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	clustersvc "github.com/envoyproxy/go-control-plane/envoy/service/cluster/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
 	"github.com/golang/protobuf/ptypes"
@@ -51,10 +53,7 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 			continue
 		}
 
-		cluster, err := ptypes.MarshalAny(&clustercfg.Cluster{
-			Name:           r,
-			ConnectTimeout: ptypes.DurationProto(2 * time.Second),
-		})
+		cluster, err := ptypes.MarshalAny(makeCluster(r, "127.0.0.1", 8081))
 		if err != nil {
 			s.l.Printf("Marshalling cluster config: %v", err)
 			continue
@@ -67,7 +66,7 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 		})
 	}
 
-	nonce, err := nonce()
+	nonce, err := makeNonce()
 	if err != nil {
 		return err
 	}
@@ -83,7 +82,7 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 	if err != nil {
 		return err
 	}
-	s.l.Printf("Sending response: %v", string(j))
+	s.l.Printf("Sending response:\n%v", string(j))
 
 	return dcs.Send(resp)
 }
@@ -98,10 +97,43 @@ func NewServer(l *log.Logger) *ODCDS {
 	}
 }
 
-func nonce() (string, error) {
+func makeNonce() (string, error) {
 	bytes := make([]byte, 8)
 	if _, err := rand.Read(bytes); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+func makeCluster(name string, host string, port uint32) *clustercfg.Cluster {
+	return &clustercfg.Cluster{
+		Name:           name,
+		ConnectTimeout: ptypes.DurationProto(2 * time.Second),
+		LoadAssignment: &endpointcfg.ClusterLoadAssignment{
+			ClusterName: name,
+			Endpoints: []*endpointcfg.LocalityLbEndpoints{
+				{
+					LbEndpoints: []*endpointcfg.LbEndpoint{
+						{
+							HostIdentifier: &endpointcfg.LbEndpoint_Endpoint{
+								Endpoint: &endpointcfg.Endpoint{
+									Address: &corecfg.Address{
+										Address: &corecfg.Address_SocketAddress{
+											SocketAddress: &corecfg.SocketAddress{
+												Protocol: corecfg.SocketAddress_TCP,
+												Address:  host,
+												PortSpecifier: &corecfg.SocketAddress_PortValue{
+													PortValue: port,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
 }
