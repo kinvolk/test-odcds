@@ -27,6 +27,7 @@ func (s *ODCDS) StreamClusters(scs clustersvc.ClusterDiscoveryService_StreamClus
 
 func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaClustersServer) error {
 	// TODO: Handle concurrent requests.
+	// TODO: Handle Envoy disconnections properly.
 	for {
 		req, err := dcs.Recv()
 		if err != nil {
@@ -40,8 +41,6 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 			continue
 		}
 		s.l.Printf("Got request:\n%s\n", string(j))
-
-		// TODO: Return a short TTL and ensure "refreshes" are handled.
 
 		if req.ResponseNonce != "" {
 			// Request is an ACK of a previous response - no need to return a cluster.
@@ -67,6 +66,7 @@ func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaCluste
 				Name:     r,
 				Resource: cluster,
 				Version:  "v1",
+				Ttl:      ptypes.DurationProto(5 * time.Second),
 			})
 		}
 
