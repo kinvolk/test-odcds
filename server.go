@@ -26,65 +26,76 @@ func (s *ODCDS) StreamClusters(scs clustersvc.ClusterDiscoveryService_StreamClus
 }
 
 func (s *ODCDS) DeltaClusters(dcs clustersvc.ClusterDiscoveryService_DeltaClustersServer) error {
-	req, err := dcs.Recv()
-	if err != nil {
-		return err
-	}
-
-	j, err := json.MarshalIndent(req, "", "  ")
-	if err != nil {
-		return err
-	}
-	s.l.Printf("Got request:\n%s\n", string(j))
-
-	// TODO: Pause rather than replying if there is nothing new.
-	// TODO: Need to loop here. Look at go-control-plane.
-	// TODO: First request from Envoy should contain a resource name so we just return that
-	// resource (cluster). A 2nd request should come in immediately as an ACK. At this point we
-	// should probably pause and/or ignore the request. We need to return "real" stuff only when a
-	// resource name is specified.
-	// TODO: Return a short TTL and ensure "refreshes" are handled.
-
-	// Construct a response.
-	resources := []*discovery.Resource{}
-	for _, r := range req.ResourceNamesSubscribe {
-		if r == "" {
-			s.l.Println("Skipping empty resource name")
-			continue
-		}
-
-		cluster, err := ptypes.MarshalAny(makeCluster(r, "127.0.0.1", 8081))
+	// TODO: Handle concurrent requests.
+	for {
+		req, err := dcs.Recv()
 		if err != nil {
-			s.l.Printf("Marshalling cluster config: %v", err)
+			s.l.Printf("Receiving request: %v", err)
 			continue
 		}
 
-		resources = append(resources, &discovery.Resource{
-			Name:     r,
-			Resource: cluster,
-			Version:  "v1",
-		})
-	}
+		j, err := json.MarshalIndent(req, "", "  ")
+		if err != nil {
+			s.l.Printf("Marshaling request JSON: %v", err)
+			continue
+		}
+		s.l.Printf("Got request:\n%s\n", string(j))
 
-	nonce, err := makeNonce()
-	if err != nil {
-		return err
-	}
+		// TODO: Return a short TTL and ensure "refreshes" are handled.
 
-	resp := &discovery.DeltaDiscoveryResponse{
-		Resources:         resources,
-		Nonce:             nonce,
-		TypeUrl:           "type.googleapis.com/envoy.config.cluster.v3.Cluster",
-		SystemVersionInfo: "foo",
-	}
+		if req.ResponseNonce != "" {
+			// Request is an ACK of a previous response - no need to return a cluster.
+			s.l.Printf("Got an ACK with nonce %s", req.ResponseNonce)
+			continue
+		}
 
-	j, err = json.MarshalIndent(resp, "", "  ")
-	if err != nil {
-		return err
-	}
-	s.l.Printf("Sending response:\n%v", string(j))
+		// Construct a response.
+		resources := []*discovery.Resource{}
+		for _, r := range req.ResourceNamesSubscribe {
+			if r == "" {
+				s.l.Println("Skipping empty resource name")
+				continue
+			}
 
-	return dcs.Send(resp)
+			cluster, err := ptypes.MarshalAny(makeCluster(r, "127.0.0.1", 8081))
+			if err != nil {
+				s.l.Printf("Marshalling cluster config: %v", err)
+				continue
+			}
+
+			resources = append(resources, &discovery.Resource{
+				Name:     r,
+				Resource: cluster,
+				Version:  "v1",
+			})
+		}
+
+		nonce, err := makeNonce()
+		if err != nil {
+			s.l.Printf("Making nonce: %v", err)
+			continue
+		}
+
+		resp := &discovery.DeltaDiscoveryResponse{
+			Resources:         resources,
+			Nonce:             nonce,
+			TypeUrl:           "type.googleapis.com/envoy.config.cluster.v3.Cluster",
+			SystemVersionInfo: "foo",
+		}
+
+		j, err = json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			s.l.Printf("Marshaling response JSON: %v", err)
+			continue
+		}
+		s.l.Printf("Sending response:\n%v", string(j))
+
+		err = dcs.Send(resp)
+		if err != nil {
+			s.l.Printf("Sending response: %v", err)
+			continue
+		}
+	}
 }
 
 func (s *ODCDS) FetchClusters(context.Context, *discovery.DiscoveryRequest) (*discovery.DiscoveryResponse, error) {
